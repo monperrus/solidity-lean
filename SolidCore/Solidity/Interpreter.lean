@@ -2549,14 +2549,17 @@ def buildCallRequest (context : Context) (kind : LowLevelCallKind)
   -- oracle answerer recovers the real callee from `codeAddress` for every kind.
   --   * delegatecall: executes callee code in the caller's frame — `recipient`
   --     is the caller (`self`), no value is transferred (`transferValue := 0`),
-  --     and `apparentValue` is the inherited ambient `context.value`.
+  --     and `apparentValue` is the inherited ambient `context.value`. `caller`
+  --     is the inherited `msg.sender` (`context.sender`), as evm-interaction's
+  --     `ExternalFrame.callRequest` sets it to `frame.source`: the callee frame
+  --     sees the same `msg.sender` as the delegating frame.
   --   * staticcall: value transfer is forbidden (`transferValue := 0`).
   --   * call/callcode: recipient is the target, value transfers.
   match kind with
   | SolidCore.Solidity.Shared.Call.ExternalCallKind.delegatecall =>
       { kind := lowLevelKindToCallKind kind
         requestedGas := wordToU256 (gas?.getD context.gasleft)
-        caller := wordToAddress context.self
+        caller := wordToAddress context.sender
         recipient := wordToAddress context.self
         codeAddress := wordToAddress target
         transferValue := wordToU256 0
@@ -2583,6 +2586,15 @@ def buildCallRequest (context : Context) (kind : LowLevelCallKind)
         apparentValue := wordToU256 value
         calldata := bytesToByteArray calldata
         permission := true }
+
+/-- The account whose code issued `request` (the requesting frame's `self`).
+    For every kind but DELEGATECALL that is `caller`; a DELEGATECALL's `caller`
+    is the inherited `msg.sender`, and the issuing account is its `recipient`
+    (the delegating frame keeps its own address). -/
+def requestingAccount (request : EvmCompiler.Simulation.CallRequest) : Word :=
+  match request.kind with
+  | .delegatecall => addressToWord request.recipient
+  | _ => addressToWord request.caller
 
 /-- Decode a shared `CallResponse` (answer) into the interpreter's
     `LowLevelCallResult`; the request params are carried through so the result
@@ -3093,7 +3105,7 @@ def ScriptedResponder.answerCall? (responder : ScriptedResponder)
     | some r => some r
     | none => rows.find? (fun row => rowMatches row none)
   row?.map (fun (result, post?) =>
-    let self := addressToWord request.caller
+    let self := requestingAccount request
     let debit :=
       ExternalInteraction.selfBalanceDebit
         (ExternalInteraction.lowLevelCall result)

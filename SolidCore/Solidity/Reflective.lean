@@ -19,7 +19,10 @@ the callee (`adoptWorld`), runs the callee's call tree under this same responder
 level deeper, and snapshots the callee back into the world (`snapshotWorld`). The
 round-trip law `snapshotWorld (adoptWorld w ..) = w` (`AdoptionLaws.lean`) is what makes
 this composition faithful, including reentrancy: the snapshot a callee receives carries
-the caller's own storage as of the call.
+the caller's own storage as of the call. A DELEGATECALL runs the code registered at
+`codeAddress` with the delegating contract as `self` (its storage, balance, address)
+and the delegating frame's `msg.sender`/`msg.value`, so its writes land in the
+delegating contract; immutables are the code's own.
 
 Out of scope (fail closed): contract creation, `gasleft`-dependent behaviour (resource
 queries get the canonical default), static-call write protection (not enforced).
@@ -60,8 +63,12 @@ structure Registry where
 structure Cursors where
   pos : List (Word × Nat) := []
   /-- Every answered call, in order: caller, target, selector bytes, success. For
-      diffing a closed-world run against the recorded EVM call sequence. -/
+      diffing a closed-world run against the recorded EVM call sequence. The caller
+      is the issuing account (`requestingAccount`): for a DELEGATECALL, the
+      delegating contract, as in an EVM trace frame's `from`. -/
   log : Array (Word × Word × List Nat × Bool) := #[]
+  /-- The call kind of each `log` entry (same index). -/
+  kinds : Array CallKind := #[]
   /-- Why a call failed inside the responder itself (not a callee revert). -/
   notes : Array String := #[]
   /-- Block environment overrides from replayed Foundry `vm.warp` / `vm.roll`. -/
@@ -82,9 +89,10 @@ def Cursors.next (cs : Cursors) (a : Word) : Nat × Cursors :=
   let n := ((cs.pos.find? (·.1 == a)).map (·.2)).getD 0
   (n, { cs with pos := (a, n + 1) :: cs.pos.filter (·.1 != a) })
 
-def Cursors.record (cs : Cursors) (caller target : Word) (calldata : List Nat) (ok : Bool) :
-    Cursors :=
-  { cs with log := cs.log.push (caller, target, calldata.take 4, ok) }
+def Cursors.record (cs : Cursors) (caller target : Word) (calldata : List Nat) (ok : Bool)
+    (kind : CallKind := .call) : Cursors :=
+  { cs with log := cs.log.push (caller, target, calldata.take 4, ok),
+            kinds := cs.kinds.push kind }
 
 def Registry.find? (reg : Registry) (a : Word) : Option Member :=
   (reg.members.find? (·.1 == Shared.norm a)).map (·.2)
@@ -131,8 +139,8 @@ partial def run {α : Type} (reg : Registry) (depth : Nat) (cs : Cursors) :
 partial def answerCall (reg : Registry) (depth : Nat) (cs : Cursors)
     (world : Shared.OpenWorld) (req : CallRequest) : Except String (CallResponse × Cursors) := do
   let idx := cs.log.size
-  let cs := cs.record (addressToWord req.caller) (addressToWord req.codeAddress)
-    (byteArrayToBytes req.calldata) false
+  let cs := cs.record (requestingAccount req) (addressToWord req.codeAddress)
+    (byteArrayToBytes req.calldata) false req.kind
   let (resp, cs) ← answerCallInner reg depth cs world req
   let (c, t, sel, _) := cs.log[idx]!
   return (resp, { cs with log := cs.log.set! idx (c, t, sel, resp.success) })
@@ -141,6 +149,11 @@ partial def answerCallInner (reg : Registry) (depth : Nat) (cs : Cursors)
     (world : Shared.OpenWorld) (req : CallRequest) : Except String (CallResponse × Cursors) := do
   if depth == 0 then return (failed world req, cs.note "depth exhausted")
   if let some resp := precompileAnswerCall? world req then return (resp, cs)
+  -- `caller` is the callee frame's `msg.sender` and `self` the account whose storage,
+  -- balance and address it runs with. For a DELEGATECALL these are the delegating
+  -- frame's own `msg.sender` and address (`buildCallRequest`), so the callee's code
+  -- runs on the delegating contract's storage and its post-storage is snapshotted
+  -- back there; `apparentValue` carries the inherited `msg.value`, nothing moves.
   let caller := addressToWord req.caller
   let self := addressToWord req.recipient
   let target := addressToWord req.codeAddress
@@ -276,11 +289,11 @@ partial def dispatch (reg : Registry) (depth : Nat) (cs : Cursors) (contract : C
 end
 
 /-- Run a sequence of top-level calls (sender, target, value, calldata) from `world0`.
-    Returns per-call success and the final world. -/
-def runTopLog (reg : Registry) (world0 : Shared.OpenWorld)
+    Returns per-call success, the final world and the final cursors (call log with
+    kinds, notes). -/
+def runTopCursors (reg : Registry) (world0 : Shared.OpenWorld)
     (calls : List (Word × Word × Word × List Nat)) :
-    Except String (List Bool × Shared.OpenWorld × Array (Word × Word × List Nat × Bool) ×
-      Array String) := do
+    Except String (List Bool × Shared.OpenWorld × Cursors) := do
   let mut w := world0
   let mut cs : Cursors := {}
   let mut oks := []
@@ -294,24 +307,20 @@ def runTopLog (reg : Registry) (world0 : Shared.OpenWorld)
     cs := cs'
     oks := oks ++ [resp.success]
     if resp.success then w := resp.postWorld
+  return (oks, w, cs)
+
+/-- `runTopCursors`, returning the call log and notes. -/
+def runTopLog (reg : Registry) (world0 : Shared.OpenWorld)
+    (calls : List (Word × Word × Word × List Nat)) :
+    Except String (List Bool × Shared.OpenWorld × Array (Word × Word × List Nat × Bool) ×
+      Array String) := do
+  let (oks, w, cs) ← runTopCursors reg world0 calls
   return (oks, w, cs.log, cs.notes)
 
 def runTop (reg : Registry) (world0 : Shared.OpenWorld)
     (calls : List (Word × Word × Word × List Nat)) :
     Except String (List Bool × Shared.OpenWorld) := do
-  let mut w := world0
-  let mut cs : Cursors := {}
-  let mut oks := []
-  for (sender, target, value, cd) in calls do
-    let req : CallRequest :=
-      { kind := .call, requestedGas := wordToU256 30000000, caller := wordToAddress sender,
-        recipient := wordToAddress target, codeAddress := wordToAddress target,
-        transferValue := wordToU256 value, apparentValue := wordToU256 value,
-        calldata := bytesToByteArray cd, permission := true }
-    let (resp, cs') ← answerCall reg 1024 cs w req
-    cs := cs'
-    oks := oks ++ [resp.success]
-    if resp.success then w := resp.postWorld
+  let (oks, w, _) ← runTopCursors reg world0 calls
   return (oks, w)
 
 /-- Build a world from (address, balance, storage) triples. Accounts the registry runs

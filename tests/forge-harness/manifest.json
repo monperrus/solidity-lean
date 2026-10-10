@@ -14975,6 +14975,44 @@
      }
     ]
    }
+  },
+  {
+   "name": "closed-world-delegatecall",
+   "description": "Closed-world reflective responder (SolidCore.Solidity.Reflective): an assembly-free proxy whose fallback DELEGATECALLs an implementation. The implementation's code must run on the proxy's storage, address and balance with the proxy frame's msg.sender and msg.value, its writes and event landing in the proxy, its return data propagating to the CALLing user; the call log records the frame as a delegatecall from the proxy to the implementation. Contrast: the same forwarding with CALL writes the implementation's own storage with msg.sender = proxy and no value. Forge pins both on the real EVM; Lean runs the same source through Reflective.runTopCursors.",
+   "forge": {
+    "root": "tests/forge-harness/closed-world-delegatecall",
+    "match_contract": "ClosedWorldDelegatecallForgeTest",
+    "match_test": "test*",
+    "quiet": true
+   },
+   "solc_import": {
+    "source": "tests/forge-harness/closed-world-delegatecall/src/ClosedWorldDelegatecall.sol",
+    "contract": "Proxy",
+    "namespace": "SolidCore.Solidity.SolcAstImport.ClosedWorldDelegatecall"
+   },
+   "lean": {
+    "imports": [
+     "SolidCore.Solidity.Checked",
+     "SolidCore.Solidity.Reflective"
+    ],
+    "evals": [
+     {
+      "label": "importedContractAccepted",
+      "expr": "SolidCore.Solidity.SolcAstImport.ClosedWorldDelegatecall.importedContractAccepted",
+      "expect": "true"
+     },
+     {
+      "label": "delegatecallUsesProxyFrame",
+      "expr": "(do\n  let program <- (SolidCore.Solidity.TypeCheck.CheckedInput.program SolidCore.Solidity.SolcAstImport.ClosedWorldDelegatecall.importedSourceUnit).mapError reprStr\n  let get := fun (n : String) => (SolidCore.Solidity.TypeCheck.CheckedProgram.contract program n).mapError reprStr\n  let proxy <- get \"Proxy\"\n  let impl <- get \"Impl\"\n  let user <- get \"User\"\n  let reg : SolidCore.Solidity.Source.Reflective.Registry :=\n    { members := [(0xA000, SolidCore.Solidity.Source.Reflective.Member.code proxy.core []), (0xB000, SolidCore.Solidity.Source.Reflective.Member.code impl.core []), (0xC000, SolidCore.Solidity.Source.Reflective.Member.code user.core []), (0xD000, SolidCore.Solidity.Source.Reflective.Member.eoa)]\n      blockEnv := user.core.context.blockEnv\n      txEnv := user.core.context.txEnv }\n  let w0 := SolidCore.Solidity.Source.Reflective.mkWorld reg [(0xA000, 0, [(0, 0xB000)]), (0xB000, 0, []), (0xC000, 0, []), (0xD000, 3, [])]\n  let cd := SolidCore.Solidity.Source.ABI.encodeSelector (SolidCore.Solidity.Source.ABI.selectorFromSignature \"go(address,uint256)\") ++ SolidCore.Solidity.Source.wordToBytesBE SolidCore.Solidity.Source.wordBytes 0xA000 ++ SolidCore.Solidity.Source.wordToBytesBE SolidCore.Solidity.Source.wordBytes 5\n  let (oks, w, cs) <- SolidCore.Solidity.Source.Reflective.runTopCursors reg w0 [(0xD000, 0xC000, 3, cd)]\n  let slot := SolidCore.Solidity.Source.Reflective.loadSlot w\n  let cs : SolidCore.Solidity.Source.Reflective.Cursors := cs\n  let frames := cs.kinds.toList.zip (cs.log.toList.map (fun (e : Nat × Nat × List Nat × Bool) => (e.1, e.2.1, e.2.2.2)))\n  Except.ok (oks == [true] && slot 0xA000 1 == 5 && slot 0xA000 2 == 0xC000 && slot 0xA000 3 == 3 && slot 0xA000 4 == 0xA000 && slot 0xA000 5 == 3 && slot 0xB000 1 == 0 && slot 0xB000 2 == 0 && slot 0xC000 0 == 50 && SolidCore.Solidity.Source.Reflective.balanceOf w 0xA000 == 3 && frames == [(EvmCompiler.Simulation.CallKind.call, 0xD000, 0xC000, true), (EvmCompiler.Simulation.CallKind.call, 0xC000, 0xA000, true), (EvmCompiler.Simulation.CallKind.delegatecall, 0xA000, 0xB000, true)]))",
+      "expect": "Except.ok true"
+     },
+     {
+      "label": "callWritesCalleeStorage",
+      "expr": "(do\n  let program <- (SolidCore.Solidity.TypeCheck.CheckedInput.program SolidCore.Solidity.SolcAstImport.ClosedWorldDelegatecall.importedSourceUnit).mapError reprStr\n  let get := fun (n : String) => (SolidCore.Solidity.TypeCheck.CheckedProgram.contract program n).mapError reprStr\n  let proxy <- get \"CallProxy\"\n  let impl <- get \"Impl\"\n  let user <- get \"User\"\n  let reg : SolidCore.Solidity.Source.Reflective.Registry :=\n    { members := [(0xA000, SolidCore.Solidity.Source.Reflective.Member.code proxy.core []), (0xB000, SolidCore.Solidity.Source.Reflective.Member.code impl.core []), (0xC000, SolidCore.Solidity.Source.Reflective.Member.code user.core []), (0xD000, SolidCore.Solidity.Source.Reflective.Member.eoa)]\n      blockEnv := user.core.context.blockEnv\n      txEnv := user.core.context.txEnv }\n  let w0 := SolidCore.Solidity.Source.Reflective.mkWorld reg [(0xA000, 0, [(0, 0xB000)]), (0xB000, 0, []), (0xC000, 0, []), (0xD000, 3, [])]\n  let cd := SolidCore.Solidity.Source.ABI.encodeSelector (SolidCore.Solidity.Source.ABI.selectorFromSignature \"go(address,uint256)\") ++ SolidCore.Solidity.Source.wordToBytesBE SolidCore.Solidity.Source.wordBytes 0xA000 ++ SolidCore.Solidity.Source.wordToBytesBE SolidCore.Solidity.Source.wordBytes 5\n  let (oks, w, cs) <- SolidCore.Solidity.Source.Reflective.runTopCursors reg w0 [(0xD000, 0xC000, 3, cd)]\n  let slot := SolidCore.Solidity.Source.Reflective.loadSlot w\n  let cs : SolidCore.Solidity.Source.Reflective.Cursors := cs\n  let frames := cs.kinds.toList.zip (cs.log.toList.map (fun (e : Nat × Nat × List Nat × Bool) => (e.1, e.2.1, e.2.2.2)))\n  Except.ok (oks == [true] && slot 0xB000 1 == 5 && slot 0xB000 2 == 0xA000 && slot 0xB000 3 == 0 && slot 0xB000 4 == 0xB000 && slot 0xA000 1 == 0 && slot 0xC000 0 == 50 && frames == [(EvmCompiler.Simulation.CallKind.call, 0xD000, 0xC000, true), (EvmCompiler.Simulation.CallKind.call, 0xC000, 0xA000, true), (EvmCompiler.Simulation.CallKind.call, 0xA000, 0xB000, true)]))",
+      "expect": "Except.ok true"
+     }
+    ]
+   }
   }
  ]
 }
